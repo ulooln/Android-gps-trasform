@@ -9,8 +9,9 @@ import android.os.SystemClock
 /**
  * 封装 Android 的模拟位置 Provider。
  *
- * 原理：向 LocationManager 注册一个名为 "gps" 的测试 Provider，
+ * 原理：向 LocationManager 注册名为 "gps"、"network" 的测试 Provider，
  * 然后通过 setTestProviderLocation 注入我们想要的位置。
+ * 同时覆盖 GPS 和网络定位，能提高高德、百度等地图 App 读到模拟位置的概率。
  *
  * 使用前提：应用必须被系统设为“模拟位置应用”（开发者选项中）。
  */
@@ -19,7 +20,14 @@ class MockLocationProvider(context: Context) {
     private val locationManager =
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-    private val providerName = LocationManager.GPS_PROVIDER
+    /** 需要模拟的 Provider。不同 App 可能监听 GPS 或网络定位，因此都注册。 */
+    private val providers = listOf(
+        LocationManager.GPS_PROVIDER,
+        LocationManager.NETWORK_PROVIDER
+    )
+
+    /** 当前已经成功注册的测试 Provider。 */
+    private val enabledProviders = mutableListOf<String>()
 
     @Volatile
     var isEnabled: Boolean = false
@@ -31,59 +39,74 @@ class MockLocationProvider(context: Context) {
     fun enable() {
         if (isEnabled) return
 
-        // 如果已经存在同名测试 Provider，先移除，避免重复注册冲突。
-        try {
-            locationManager.removeTestProvider(providerName)
-        } catch (_: IllegalArgumentException) {
-            // Provider 不存在时忽略。
-        } catch (_: SecurityException) {
-            // 没有模拟位置权限时，下面 addTestProvider 会再次抛出更明确的异常。
+        for (provider in providers) {
+            try {
+                // 如果已经存在同名测试 Provider，先移除，避免重复注册冲突。
+                try {
+                    locationManager.removeTestProvider(provider)
+                } catch (_: IllegalArgumentException) {
+                    // Provider 不存在时忽略。
+                }
+
+                locationManager.addTestProvider(
+                    provider,
+                    false, // requiresNetwork
+                    false, // requiresSatellite
+                    false, // requiresCell
+                    false, // hasMonetaryCost
+                    true,  // supportsAltitude
+                    true,  // supportsSpeed
+                    true,  // supportsBearing
+                    Criteria.POWER_LOW,
+                    Criteria.ACCURACY_FINE
+                )
+                locationManager.setTestProviderEnabled(provider, true)
+                enabledProviders.add(provider)
+            } catch (e: SecurityException) {
+                // 没有模拟位置权限：让上层明确提示用户去开发者选项设置。
+                disable()
+                throw e
+            } catch (_: Exception) {
+                // 某个 Provider 在当前系统上不支持时，跳过它，尽量不影响其他 Provider。
+            }
         }
 
-        locationManager.addTestProvider(
-            providerName,
-            false, // requiresNetwork
-            false, // requiresSatellite
-            false, // requiresCell
-            false, // hasMonetaryCost
-            true,  // supportsAltitude
-            true,  // supportsSpeed
-            true,  // supportsBearing
-            Criteria.POWER_LOW,
-            Criteria.ACCURACY_FINE
-        )
-        locationManager.setTestProviderEnabled(providerName, true)
-        isEnabled = true
+        isEnabled = enabledProviders.isNotEmpty()
     }
 
     /**
-     * 把模拟位置更新到指定经纬度。
+     * 把模拟位置同时更新到所有已注册的测试 Provider。
      */
     fun update(latitude: Double, longitude: Double) {
         enable()
 
-        val location = Location(providerName).apply {
-            this.latitude = latitude
-            this.longitude = longitude
-            accuracy = 5f
-            time = System.currentTimeMillis()
-            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+        for (provider in enabledProviders.toList()) {
+            val location = Location(provider).apply {
+                this.latitude = latitude
+                this.longitude = longitude
+                accuracy = 5f
+                time = System.currentTimeMillis()
+                elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+            }
+            locationManager.setTestProviderLocation(provider, location)
         }
-        locationManager.setTestProviderLocation(providerName, location)
     }
 
     /**
-     * 注销测试 Provider，恢复系统真实定位。
+     * 注销所有测试 Provider，恢复系统真实定位。
      */
     fun disable() {
-        if (!isEnabled) return
-        try {
-            locationManager.setTestProviderEnabled(providerName, false)
-            locationManager.removeTestProvider(providerName)
-        } catch (_: Exception) {
-            // 停止时即使系统拒绝清理，也不应导致应用崩溃。
-        } finally {
-            isEnabled = false
+        if (enabledProviders.isEmpty()) return
+
+        for (provider in enabledProviders.toList()) {
+            try {
+                locationManager.setTestProviderEnabled(provider, false)
+                locationManager.removeTestProvider(provider)
+            } catch (_: Exception) {
+                // 停止时即使系统拒绝清理，也不应导致应用崩溃。
+            }
         }
+        enabledProviders.clear()
+        isEnabled = false
     }
 }

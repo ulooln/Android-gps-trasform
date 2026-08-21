@@ -19,7 +19,7 @@ import androidx.core.content.ContextCompat
 import com.ulooln.gpstransform.model.RoutePoint
 import com.ulooln.gpstransform.service.MockLocationService
 import org.osmdroid.config.Configuration
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.tileprovider.tilesource.XYTileSource
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.events.MapEventsReceiver
@@ -84,8 +84,29 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         stopCruiseButton = findViewById(R.id.stopCruiseButton)
     }
 
+
+    /** 创建国内可访问的高德地图瓦片源。 */
+    private fun createChinaTileSource(): XYTileSource {
+        return XYTileSource(
+            "AMap",
+            3,
+            19,
+            256,
+            ".png",
+            arrayOf(
+                "https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
+                "https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
+                "https://webrd03.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
+                "https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}"
+            ),
+            "高德地图"
+        )
+    }
+
     private fun setupMap() {
-        mapView.setTileSource(TileSourceFactory.MAPNIK)
+        // 使用高德瓦片源：OpenStreetMap 在国内经常无法访问，会导致只显示灰色网格。
+        Configuration.getInstance().userAgentValue = packageName ?: "osmdroid"
+        mapView.setTileSource(createChinaTileSource())
         mapView.setMultiTouchControls(true)
         mapView.controller.setZoom(16.0)
         mapView.controller.setCenter(GeoPoint(39.9042, 116.4074)) // 默认北京

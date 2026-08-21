@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">GPS 模拟定位</string>
+    <string name="status_default">点击地图设置位置；长按添加巡航点</string>
+    <string name="single_mode">单点模式</string>
+    <string name="cruise_mode">巡航模式</string>
+    <string name="clear_route">清除路线</string>
+    <string name="start_cruise">开始巡航</string>
+    <string name="stop_cruise">停止</string>
+    <string name="duration_hint">每段秒数</string>
+    <string name="route_hint">路线：请在巡航模式下长按地图添加点</string>
+</resources>

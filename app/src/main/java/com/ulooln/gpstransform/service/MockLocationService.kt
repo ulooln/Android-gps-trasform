@@ -19,8 +19,12 @@ import com.ulooln.gpstransform.mock.MockLocationProvider
 import com.ulooln.gpstransform.model.RoutePoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import org.osmdroid.util.GeoPoint
 
 /**
@@ -42,6 +46,9 @@ class MockLocationService : Service() {
     private lateinit var mockProvider: MockLocationProvider
     private var cruiseController: CruiseController? = null
     private var cruiseListener: CruiseListener? = null
+    private var pulseJob: Job? = null
+    private var currentLatitude = 0.0
+    private var currentLongitude = 0.0
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -69,6 +76,9 @@ class MockLocationService : Service() {
      */
     fun setMockLocation(latitude: Double, longitude: Double) {
         mockProvider.update(latitude, longitude)
+        currentLatitude = latitude
+        currentLongitude = longitude
+        startMockPulse()
     }
 
     /** 设置巡航进度回调（例如 Activity 重建后重新绑定）。 */
@@ -78,6 +88,7 @@ class MockLocationService : Service() {
 
     /** 开始巡航。 */
     fun startCruise(points: List<RoutePoint>, listener: CruiseListener) {
+        stopMockPulse()
         stopCruise()
         cruiseListener = listener
         cruiseController = CruiseController(mockProvider, serviceScope)
@@ -101,8 +112,28 @@ class MockLocationService : Service() {
 
     /** 停止巡航并注销模拟 Provider。 */
     fun shutdownMocking() {
+        stopMockPulse()
         stopCruise()
         mockProvider.disable()
+    }
+
+    /**
+     * 持续以 1Hz 重复发送同一个模拟位置。
+     * 很多地图/打车 App 只响应持续的定位更新，单次 setTestProviderLocation 可能不够。
+     */
+    private fun startMockPulse() {
+        stopMockPulse()
+        pulseJob = serviceScope.launch {
+            while (isActive) {
+                mockProvider.update(currentLatitude, currentLongitude)
+                delay(1_000L)
+            }
+        }
+    }
+
+    private fun stopMockPulse() {
+        pulseJob?.cancel()
+        pulseJob = null
     }
 
     override fun onDestroy() {

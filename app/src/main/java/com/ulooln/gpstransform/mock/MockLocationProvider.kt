@@ -20,10 +20,11 @@ class MockLocationProvider(context: Context) {
     private val locationManager =
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-    /** 需要模拟的 Provider。不同 App 可能监听 GPS 或网络定位，因此都注册。 */
+    /** 需要模拟的 Provider。不同 App 可能监听 GPS、网络或被动定位，因此都注册。 */
     private val providers = listOf(
         LocationManager.GPS_PROVIDER,
-        LocationManager.NETWORK_PROVIDER
+        LocationManager.NETWORK_PROVIDER,
+        LocationManager.PASSIVE_PROVIDER
     )
 
     /** 当前已经成功注册的测试 Provider。 */
@@ -84,9 +85,14 @@ class MockLocationProvider(context: Context) {
             val location = Location(provider).apply {
                 this.latitude = latitude
                 this.longitude = longitude
-                accuracy = 5f
+                accuracy = 3f
+                altitude = 0.0
+                speed = 0f
+                bearing = 0f
                 time = System.currentTimeMillis()
                 elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                extras?.putInt("satellites", 10)
+                extras?.putInt("maxSatellites", 32)
             }
             locationManager.setTestProviderLocation(provider, location)
         }

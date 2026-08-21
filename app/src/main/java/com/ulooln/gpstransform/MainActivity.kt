@@ -19,7 +19,8 @@ import androidx.core.content.ContextCompat
 import com.ulooln.gpstransform.model.RoutePoint
 import com.ulooln.gpstransform.service.MockLocationService
 import org.osmdroid.config.Configuration
-import org.osmdroid.tileprovider.tilesource.XYTileSource
+import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
+import org.osmdroid.util.MapTileIndex
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.events.MapEventsReceiver
@@ -33,6 +34,34 @@ import org.osmdroid.views.overlay.Polyline
  * 单点模式：点击地图立即设置模拟位置。
  * 巡航模式：长按地图依次添加起点、途经点、终点，并可设置每段通过秒数。
  */
+/**
+ * 高德地图瓦片源。
+ *
+ * XYTileSource 只支持 "baseUrl/z/x/y.png" 这种路径格式，
+ * 而高德瓦片使用 query 参数，所以这里自定义 URL 拼装。
+ */
+private class AmapTileSource : OnlineTileSourceBase(
+    "AMap",
+    3,
+    19,
+    256,
+    ".png",
+    arrayOf(
+        "https://webrd01.is.autonavi.com/appmaptile",
+        "https://webrd02.is.autonavi.com/appmaptile",
+        "https://webrd03.is.autonavi.com/appmaptile",
+        "https://webrd04.is.autonavi.com/appmaptile"
+    ),
+    "高德地图"
+) {
+    override fun getTileURLString(pMapTileIndex: Long): String {
+        val zoom = MapTileIndex.getZoom(pMapTileIndex)
+        val x = MapTileIndex.getX(pMapTileIndex)
+        val y = MapTileIndex.getY(pMapTileIndex)
+        return "$baseUrl?lang=zh_cn&size=1&scale=1&style=7&x=$x&y=$y&z=$zoom"
+    }
+}
+
 class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, ServiceConnection {
 
     private enum class Mode { SINGLE, CRUISE }
@@ -86,21 +115,8 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
 
 
     /** 创建国内可访问的高德地图瓦片源。 */
-    private fun createChinaTileSource(): XYTileSource {
-        return XYTileSource(
-            "AMap",
-            3,
-            19,
-            256,
-            ".png",
-            arrayOf(
-                "https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
-                "https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
-                "https://webrd03.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
-                "https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}"
-            ),
-            "高德地图"
-        )
+    private fun createChinaTileSource(): OnlineTileSourceBase {
+        return AmapTileSource()
     }
 
     private fun setupMap() {

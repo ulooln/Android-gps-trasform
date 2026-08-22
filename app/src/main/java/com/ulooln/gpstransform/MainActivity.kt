@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.text.InputType
 import android.widget.Button
 import android.widget.EditText
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -17,6 +18,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.ulooln.gpstransform.model.RoutePoint
+import com.ulooln.gpstransform.root.RootHelper
 import com.ulooln.gpstransform.service.MockLocationService
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
@@ -74,6 +76,8 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
     private lateinit var cruiseModeButton: Button
     private lateinit var startCruiseButton: Button
     private lateinit var stopCruiseButton: Button
+    private lateinit var rootModeSwitch: Switch
+    private lateinit var rootStatusText: TextView
 
     private var service: MockLocationService? = null
     private var serviceBound = false
@@ -111,6 +115,8 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         cruiseModeButton = findViewById(R.id.cruiseModeButton)
         startCruiseButton = findViewById(R.id.startCruiseButton)
         stopCruiseButton = findViewById(R.id.stopCruiseButton)
+        rootModeSwitch = findViewById(R.id.rootModeSwitch)
+        rootStatusText = findViewById(R.id.rootStatusText)
     }
 
 
@@ -165,6 +171,20 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         stopCruiseButton.isEnabled = false
 
         findViewById<Button>(R.id.clearButton).setOnClickListener { clearRoute() }
+
+        rootModeSwitch.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                if (!RootHelper.isRootAvailable()) {
+                    toast("未检测到 root 权限，Root 模式不可用")
+                    rootModeSwitch.isChecked = false
+                    rootStatusText.text = "未检测到 root"
+                } else {
+                    rootStatusText.text = "已开启，设置位置时自动配置系统权限"
+                }
+            } else {
+                rootStatusText.text = "未开启"
+            }
+        }
 
         updateModeUi()
     }
@@ -245,6 +265,23 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
             return
         }
 
+        if (rootModeSwitch.isChecked) {
+            statusText.text = "Root 模式：正在配置系统模拟位置…"
+            Thread {
+                val ok = RootHelper.configureMockLocationApp(packageName ?: "com.ulooln.gpstransform")
+                runOnUiThread {
+                    if (!ok) {
+                        statusText.text = "Root 配置失败，尝试普通模拟"
+                    }
+                    performSetMockLocation(point, mockService)
+                }
+            }.start()
+        } else {
+            performSetMockLocation(point, mockService)
+        }
+    }
+
+    private fun performSetMockLocation(point: GeoPoint, mockService: MockLocationService) {
         try {
             mockService.setMockLocation(point.latitude, point.longitude)
             updateCurrentMarker(point)
@@ -378,6 +415,23 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
             return
         }
 
+        if (rootModeSwitch.isChecked) {
+            statusText.text = "Root 模式：正在配置系统模拟位置…"
+            Thread {
+                val ok = RootHelper.configureMockLocationApp(packageName ?: "com.ulooln.gpstransform")
+                runOnUiThread {
+                    if (!ok) {
+                        statusText.text = "Root 配置失败，尝试普通巡航"
+                    }
+                    performStartCruise(mockService)
+                }
+            }.start()
+        } else {
+            performStartCruise(mockService)
+        }
+    }
+
+    private fun performStartCruise(mockService: MockLocationService) {
         isCruising = true
         startCruiseButton.isEnabled = false
         stopCruiseButton.isEnabled = true

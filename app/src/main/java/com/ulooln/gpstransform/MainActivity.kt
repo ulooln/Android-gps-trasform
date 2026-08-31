@@ -120,15 +120,10 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
     }
 
 
-    /** 创建国内可访问的高德地图瓦片源。 */
-    private fun createChinaTileSource(): OnlineTileSourceBase {
-        return AmapTileSource()
-    }
-
     private fun setupMap() {
         // 使用高德瓦片源：OpenStreetMap 在国内经常无法访问，会导致只显示灰色网格。
         Configuration.getInstance().userAgentValue = packageName ?: "osmdroid"
-        mapView.setTileSource(createChinaTileSource())
+        mapView.setTileSource(AmapTileSource())
         mapView.setMultiTouchControls(true)
         mapView.controller.setZoom(16.0)
         mapView.controller.setCenter(GeoPoint(39.9042, 116.4074)) // 默认北京
@@ -259,6 +254,21 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
     // ---------------------------------------------------------------------
 
     private fun setMockLocation(point: GeoPoint) {
+        runAfterRootSetup { mockService ->
+            try {
+                mockService.setMockLocation(point.latitude, point.longitude)
+                updateCurrentMarker(point)
+                statusText.text = "已设置模拟位置：${formatPoint(point)}"
+            } catch (e: SecurityException) {
+                statusText.text = "没有模拟位置权限：请在开发者选项中把本应用设为模拟位置应用"
+            } catch (e: Exception) {
+                statusText.text = "设置模拟位置失败：${e.message}"
+            }
+        }
+    }
+
+    /** 若开启 Root 模式则先配置系统权限，再执行需要模拟定位服务的操作。 */
+    private fun runAfterRootSetup(onReady: (MockLocationService) -> Unit) {
         val mockService = service
         if (mockService == null) {
             statusText.text = "模拟定位服务尚未连接，请稍候"
@@ -273,23 +283,11 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
                     if (!ok) {
                         statusText.text = "Root 配置失败，尝试普通模拟"
                     }
-                    performSetMockLocation(point, mockService)
+                    onReady(mockService)
                 }
             }.start()
         } else {
-            performSetMockLocation(point, mockService)
-        }
-    }
-
-    private fun performSetMockLocation(point: GeoPoint, mockService: MockLocationService) {
-        try {
-            mockService.setMockLocation(point.latitude, point.longitude)
-            updateCurrentMarker(point)
-            statusText.text = "已设置模拟位置：${formatPoint(point)}"
-        } catch (e: SecurityException) {
-            statusText.text = "没有模拟位置权限：请在开发者选项中把本应用设为模拟位置应用"
-        } catch (e: Exception) {
-            statusText.text = "设置模拟位置失败：${e.message}"
+            onReady(mockService)
         }
     }
 
@@ -409,35 +407,13 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
             return
         }
 
-        val mockService = service
-        if (mockService == null) {
-            statusText.text = "模拟定位服务尚未连接，请稍候"
-            return
+        runAfterRootSetup { mockService ->
+            isCruising = true
+            startCruiseButton.isEnabled = false
+            stopCruiseButton.isEnabled = true
+            statusText.text = "巡航中…"
+            mockService.startCruise(routePoints.toList(), this)
         }
-
-        if (rootModeSwitch.isChecked) {
-            statusText.text = "Root 模式：正在配置系统模拟位置…"
-            Thread {
-                val ok = RootHelper.configureMockLocationApp(packageName ?: "com.ulooln.gpstransform")
-                runOnUiThread {
-                    if (!ok) {
-                        statusText.text = "Root 配置失败，尝试普通巡航"
-                    }
-                    performStartCruise(mockService)
-                }
-            }.start()
-        } else {
-            performStartCruise(mockService)
-        }
-    }
-
-    private fun performStartCruise(mockService: MockLocationService) {
-        isCruising = true
-        startCruiseButton.isEnabled = false
-        stopCruiseButton.isEnabled = true
-        statusText.text = "巡航中…"
-
-        mockService.startCruise(routePoints.toList(), this)
     }
 
     private fun stopCruise() {

@@ -143,7 +143,7 @@ class MockLocationService : Service() {
     }
 
     private fun startAsForeground() {
-        val notification = buildNotification("模拟定位服务运行中")
+        val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         } else {
@@ -151,7 +151,7 @@ class MockLocationService : Service() {
         }
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(): Notification {
         val contentIntent = PendingIntent.getActivity(
             this,
             0,
@@ -161,7 +161,7 @@ class MockLocationService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(text)
+            .setContentText("模拟定位服务运行中")
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)

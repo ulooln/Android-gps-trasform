@@ -87,6 +87,9 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
     private var serviceBound = false
     private var mode = Mode.SINGLE
 
+    /** 服务刚被重新拉起时暂存用户操作，连接成功后自动执行。 */
+    private var pendingAction: ((MockLocationService) -> Unit)? = null
+
     private val routePoints = mutableListOf<RoutePoint>()
     private val routeMarkers = mutableListOf<Marker>()
     private var routePolyline: Polyline? = null
@@ -108,6 +111,11 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         bindViews()
         restoreState(savedInstanceState)
         setupMap()
+        // 恢复旋转/重建前的路线标记与路线信息。
+        if (routePoints.isNotEmpty()) {
+            refreshRouteMarkers()
+            refreshRouteInfo()
+        }
         setupButtons()
         requestLocationAndStartService()
     }
@@ -326,11 +334,18 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
             isMocking -> "模拟定位运行中"
             else -> "服务已连接，可以开始模拟定位"
         }
+
+        val action = pendingAction
+        pendingAction = null
+        if (action != null) {
+            s?.let { performWithRootSetup(it, action) }
+        }
     }
 
     override fun onServiceDisconnected(name: android.content.ComponentName?) {
         service = null
         serviceBound = false
+        pendingAction = null
         statusText.text = "模拟定位服务已断开"
     }
 
@@ -366,12 +381,19 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
     private fun runAfterRootSetup(onReady: (MockLocationService) -> Unit) {
         val mockService = service
         if (mockService == null) {
-            // 上次「停止模拟」后服务已退出，这里自动重新拉起并绑定。
+            // 上次「停止模拟」后服务已退出：自动拉起并绑定，连接成功后自动执行本次操作。
+            pendingAction = onReady
             startAndBindService()
-            statusText.text = "正在启动模拟定位服务，请稍后重试"
+            statusText.text = "正在启动模拟定位服务…"
             return
         }
+        performWithRootSetup(mockService, onReady)
+    }
 
+    private fun performWithRootSetup(
+        mockService: MockLocationService,
+        onReady: (MockLocationService) -> Unit
+    ) {
         if (rootModeSwitch.isChecked) {
             statusText.text = "Root 模式：正在配置系统模拟位置…"
             Thread {

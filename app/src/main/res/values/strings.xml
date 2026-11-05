@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">GPS 模拟定位</string>
     <string name="status_default">点击地图设置位置；长按添加巡航点</string>
@@ -7,5 +8,13 @@
     <string name="start_cruise">开始巡航</string>
     <string name="stop_cruise">停止</string>
     <string name="duration_hint">每段秒数</string>
+    <string name="duration_default">10</string>
     <string name="route_hint">路线：请在巡航模式下长按地图添加点</string>
+    <string name="stop_mocking">停止模拟（恢复真实定位）</string>
+    <string name="root_mode">Root 模式</string>
+    <string name="root_status_off">未开启</string>
+    <string name="notification_channel_name">模拟定位服务</string>
+    <string name="notification_stop">停止模拟</string>
+    <string name="notification_idle">尚未设置位置</string>
+    <string name="permission_notification_hint">通知权限被拒绝，前台服务通知将不可见（不影响模拟功能）</string>
 </resources>

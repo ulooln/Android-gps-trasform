@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.text.InputType
@@ -17,6 +18,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.ulooln.gpstransform.mock.MockLocationUnavailableException
 import com.ulooln.gpstransform.model.RoutePoint
 import com.ulooln.gpstransform.root.RootHelper
 import com.ulooln.gpstransform.service.MockLocationService
@@ -35,6 +37,7 @@ import org.osmdroid.views.overlay.Polyline
  *
  * 单点模式：点击地图立即设置模拟位置。
  * 巡航模式：长按地图依次添加起点、途经点、终点，并可设置每段通过秒数。
+ * 界面提供「停止模拟」入口，用于恢复系统真实定位。
  */
 /**
  * 高德地图瓦片源。
@@ -76,6 +79,7 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
     private lateinit var cruiseModeButton: Button
     private lateinit var startCruiseButton: Button
     private lateinit var stopCruiseButton: Button
+    private lateinit var stopMockingButton: Button
     private lateinit var rootModeSwitch: Switch
     private lateinit var rootStatusText: TextView
 
@@ -88,6 +92,7 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
     private var routePolyline: Polyline? = null
     private var currentMarker: Marker? = null
     private var isCruising = false
+    private var isMocking = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,6 +106,7 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         setContentView(R.layout.activity_main)
 
         bindViews()
+        restoreState(savedInstanceState)
         setupMap()
         setupButtons()
         requestLocationAndStartService()
@@ -115,14 +121,30 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         cruiseModeButton = findViewById(R.id.cruiseModeButton)
         startCruiseButton = findViewById(R.id.startCruiseButton)
         stopCruiseButton = findViewById(R.id.stopCruiseButton)
+        stopMockingButton = findViewById(R.id.stopMockingButton)
         rootModeSwitch = findViewById(R.id.rootModeSwitch)
         rootStatusText = findViewById(R.id.rootStatusText)
     }
 
+    /** 旋转/重建后恢复路线与模式，避免 UI 与服务状态不一致。 */
+    private fun restoreState(savedInstanceState: Bundle?) {
+        savedInstanceState ?: return
+        val lats = savedInstanceState.getDoubleArray(KEY_LATITUDES) ?: return
+        val lons = savedInstanceState.getDoubleArray(KEY_LONGITUDES) ?: return
+        val durations = savedInstanceState.getLongArray(KEY_DURATIONS) ?: return
+        if (lats.size != lons.size || lats.size != durations.size) return
+
+        routePoints.clear()
+        for (i in lats.indices) {
+            routePoints.add(RoutePoint(lats[i], lons[i], durations[i]))
+        }
+        val savedMode = savedInstanceState.getString(KEY_MODE)
+        mode = if (savedMode == Mode.CRUISE.name) Mode.CRUISE else Mode.SINGLE
+    }
 
     private fun setupMap() {
         // 使用高德瓦片源：OpenStreetMap 在国内经常无法访问，会导致只显示灰色网格。
-        Configuration.getInstance().userAgentValue = packageName ?: "osmdroid"
+        Configuration.getInstance().userAgentValue = packageName
         mapView.setTileSource(AmapTileSource())
         mapView.setMultiTouchControls(true)
         mapView.controller.setZoom(16.0)
@@ -163,25 +185,35 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
 
         startCruiseButton.setOnClickListener { startCruise() }
         stopCruiseButton.setOnClickListener { stopCruise() }
-        stopCruiseButton.isEnabled = false
+        stopMockingButton.setOnClickListener { stopMocking() }
 
         findViewById<Button>(R.id.clearButton).setOnClickListener { clearRoute() }
 
         rootModeSwitch.setOnCheckedChangeListener { _, isChecked ->
-            if (isChecked) {
-                if (!RootHelper.isRootAvailable()) {
-                    toast("未检测到 root 权限，Root 模式不可用")
-                    rootModeSwitch.isChecked = false
-                    rootStatusText.text = "未检测到 root"
-                } else {
-                    rootStatusText.text = "已开启，设置位置时自动配置系统权限"
-                }
-            } else {
+            if (!isChecked) {
                 rootStatusText.text = "未开启"
+                return@setOnCheckedChangeListener
             }
+            // root 检测要启动 su 子进程，必须放到后台线程，避免主线程阻塞/ANR。
+            rootModeSwitch.isEnabled = false
+            rootStatusText.text = "检测 root 中…"
+            Thread {
+                val available = RootHelper.isRootAvailable()
+                runOnUiThread {
+                    rootModeSwitch.isEnabled = true
+                    if (available) {
+                        rootStatusText.text = "已开启，设置位置时自动配置系统权限"
+                    } else {
+                        rootModeSwitch.isChecked = false
+                        rootStatusText.text = "未检测到 root"
+                        toast("未检测到 root 权限，Root 模式不可用")
+                    }
+                }
+            }.start()
         }
 
         updateModeUi()
+        updateControlState()
     }
 
     private fun updateModeUi() {
@@ -189,16 +221,32 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         cruiseModeButton.isSelected = mode == Mode.CRUISE
     }
 
+    /** 依据实际状态刷新按钮，旋转/重建后不会出现「巡航中但停止按钮不可用」。 */
+    private fun updateControlState() {
+        stopCruiseButton.isEnabled = isCruising
+        startCruiseButton.isEnabled = !isCruising
+        stopMockingButton.isEnabled = isMocking || isCruising
+    }
+
     // ---------------------------------------------------------------------
     // 权限与前台服务
     // ---------------------------------------------------------------------
 
-    private fun requestLocationAndStartService() {
-        val fineGranted = ContextCompat.checkSelfPermission(
+    private fun hasLocationPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(
             this, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        return fine || coarse
+    }
 
-        if (!fineGranted) {
+    private fun requestLocationAndStartService() {
+        if (hasLocationPermission()) {
+            startAndBindService()
+            requestNotificationPermissionIfNeeded()
+        } else {
             ActivityCompat.requestPermissions(
                 this,
                 arrayOf(
@@ -207,9 +255,21 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
                 ),
                 REQUEST_LOCATION
             )
-        } else {
-            startAndBindService()
         }
+    }
+
+    /** Android 13+ 前台服务通知需要 POST_NOTIFICATIONS；被拒绝只影响可见性。 */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(
+                this, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        ) return
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            REQUEST_NOTIFICATION
+        )
     }
 
     override fun onRequestPermissionsResult(
@@ -218,35 +278,60 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_LOCATION) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startAndBindService()
-            } else {
-                statusText.text = "需要定位权限才能启动模拟定位服务"
+        when (requestCode) {
+            REQUEST_LOCATION -> {
+                // 不依赖数组顺序：直接复查实际授权结果。
+                if (hasLocationPermission()) {
+                    startAndBindService()
+                    requestNotificationPermissionIfNeeded()
+                } else {
+                    statusText.text = "需要定位权限才能启动模拟定位服务"
+                }
+            }
+            REQUEST_NOTIFICATION -> {
+                val granted = grantResults.isNotEmpty() &&
+                    grantResults[0] == PackageManager.PERMISSION_GRANTED
+                if (!granted) {
+                    toast(getString(R.string.permission_notification_hint))
+                }
             }
         }
     }
 
     private fun startAndBindService() {
         val intent = Intent(this, MockLocationService::class.java)
-        ContextCompat.startForegroundService(this, intent)
-        bindService(intent, this, Context.BIND_AUTO_CREATE)
+        try {
+            ContextCompat.startForegroundService(this, intent)
+            bindService(intent, this, Context.BIND_AUTO_CREATE)
+        } catch (e: Exception) {
+            statusText.text = "启动模拟定位服务失败：${e.message}"
+        }
     }
 
     override fun onServiceConnected(name: android.content.ComponentName?, binder: IBinder?) {
         service = (binder as MockLocationService.LocalBinder).getService()
         serviceBound = true
         service?.setCruiseListener(this)
-        if (isCruising) {
-            statusText.text = "巡航中…"
-        } else {
-            statusText.text = "服务已连接，可以开始模拟定位"
+
+        // 以服务状态为准恢复 UI（Activity 可能被重建过）。
+        val s = service
+        isCruising = s?.isCruising ?: false
+        isMocking = s?.isMocking ?: false
+        if (s != null && s.lastLatitude != 0.0) {
+            updateCurrentMarker(GeoPoint(s.lastLatitude, s.lastLongitude))
+        }
+        updateControlState()
+        statusText.text = when {
+            isCruising -> "巡航中…"
+            isMocking -> "模拟定位运行中"
+            else -> "服务已连接，可以开始模拟定位"
         }
     }
 
     override fun onServiceDisconnected(name: android.content.ComponentName?) {
         service = null
         serviceBound = false
+        statusText.text = "模拟定位服务已断开"
     }
 
     // ---------------------------------------------------------------------
@@ -257,11 +342,21 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         runAfterRootSetup { mockService ->
             try {
                 mockService.setMockLocation(point.latitude, point.longitude)
+                isMocking = true
                 updateCurrentMarker(point)
-                statusText.text = "已设置模拟位置：${formatPoint(point)}"
+                updateControlState()
+                statusText.text = "已设置模拟位置（地图坐标）：${formatPoint(point)}"
+            } catch (e: MockLocationUnavailableException) {
+                isMocking = false
+                updateControlState()
+                statusText.text = e.message ?: "模拟位置不可用"
             } catch (e: SecurityException) {
+                isMocking = false
+                updateControlState()
                 statusText.text = "没有模拟位置权限：请在开发者选项中把本应用设为模拟位置应用"
             } catch (e: Exception) {
+                isMocking = false
+                updateControlState()
                 statusText.text = "设置模拟位置失败：${e.message}"
             }
         }
@@ -271,14 +366,16 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
     private fun runAfterRootSetup(onReady: (MockLocationService) -> Unit) {
         val mockService = service
         if (mockService == null) {
-            statusText.text = "模拟定位服务尚未连接，请稍候"
+            // 上次「停止模拟」后服务已退出，这里自动重新拉起并绑定。
+            startAndBindService()
+            statusText.text = "正在启动模拟定位服务，请稍后重试"
             return
         }
 
         if (rootModeSwitch.isChecked) {
             statusText.text = "Root 模式：正在配置系统模拟位置…"
             Thread {
-                val ok = RootHelper.configureMockLocationApp(packageName ?: "com.ulooln.gpstransform")
+                val ok = RootHelper.configureMockLocationApp(packageName)
                 runOnUiThread {
                     if (!ok) {
                         statusText.text = "Root 配置失败，尝试普通模拟"
@@ -351,14 +448,9 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
 
         // 添加新路线点标记。
         routePoints.forEachIndexed { index, point ->
-            val title = when (index) {
-                0 -> "起点"
-                routePoints.lastIndex -> "终点"
-                else -> "途经 $index"
-            }
             val marker = Marker(mapView).apply {
                 position = GeoPoint(point.latitude, point.longitude)
-                this.title = title
+                title = pointLabel(index)
                 mapView.overlays.add(this)
             }
             routeMarkers.add(marker)
@@ -378,6 +470,12 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         mapView.invalidate()
     }
 
+    private fun pointLabel(index: Int): String = when (index) {
+        0 -> "起点"
+        routePoints.lastIndex -> "终点"
+        else -> "途经 $index"
+    }
+
     private fun refreshRouteInfo() {
         if (routePoints.isEmpty()) {
             routeInfoText.text = getString(R.string.route_hint)
@@ -387,12 +485,7 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         val totalSeconds = routePoints.sumOf { it.durationSeconds }
         val builder = StringBuilder("路线：")
         routePoints.forEachIndexed { index, _ ->
-            val label = when (index) {
-                0 -> "起点"
-                routePoints.lastIndex -> "终点"
-                else -> "途经${index}"
-            }
-            builder.append(label)
+            builder.append(pointLabel(index))
             if (index < routePoints.lastIndex) {
                 builder.append(" → ${routePoints[index + 1].durationSeconds}s → ")
             }
@@ -409,8 +502,8 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
 
         runAfterRootSetup { mockService ->
             isCruising = true
-            startCruiseButton.isEnabled = false
-            stopCruiseButton.isEnabled = true
+            isMocking = true
+            updateControlState()
             statusText.text = "巡航中…"
             mockService.startCruise(routePoints.toList(), this)
         }
@@ -419,9 +512,26 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
     private fun stopCruise() {
         service?.stopCruise()
         isCruising = false
-        startCruiseButton.isEnabled = true
-        stopCruiseButton.isEnabled = false
-        statusText.text = "巡航已停止"
+        updateControlState()
+        statusText.text = "巡航已停止，保持最后一次模拟位置"
+    }
+
+    /** 停止模拟定位并恢复系统真实定位（同时撤销前台通知、解绑服务）。 */
+    private fun stopMocking() {
+        service?.stopMocking()
+        isMocking = false
+        isCruising = false
+        if (serviceBound) {
+            try {
+                unbindService(this)
+            } catch (_: IllegalArgumentException) {
+                // 已解绑时忽略。
+            }
+            serviceBound = false
+        }
+        service = null
+        updateControlState()
+        statusText.text = "已停止模拟，恢复真实定位"
     }
 
     private fun clearRoute() {
@@ -446,9 +556,16 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
 
     override fun onCruiseFinished() {
         isCruising = false
-        startCruiseButton.isEnabled = true
-        stopCruiseButton.isEnabled = false
-        statusText.text = "巡航完成"
+        updateControlState()
+        statusText.text = "巡航完成，保持最后一次模拟位置"
+    }
+
+    override fun onMockError(message: String) {
+        isMocking = false
+        isCruising = false
+        updateControlState()
+        statusText.text = message
+        toast(message)
     }
 
     // ---------------------------------------------------------------------
@@ -477,6 +594,14 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
         mapView.onPause()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putDoubleArray(KEY_LATITUDES, routePoints.map { it.latitude }.toDoubleArray())
+        outState.putDoubleArray(KEY_LONGITUDES, routePoints.map { it.longitude }.toDoubleArray())
+        outState.putLongArray(KEY_DURATIONS, routePoints.map { it.durationSeconds }.toLongArray())
+        outState.putString(KEY_MODE, mode.name)
+    }
+
     override fun onDestroy() {
         if (serviceBound) {
             service?.setCruiseListener(null)
@@ -488,5 +613,10 @@ class MainActivity : AppCompatActivity(), MockLocationService.CruiseListener, Se
 
     companion object {
         private const val REQUEST_LOCATION = 100
+        private const val REQUEST_NOTIFICATION = 101
+        private const val KEY_LATITUDES = "route_latitudes"
+        private const val KEY_LONGITUDES = "route_longitudes"
+        private const val KEY_DURATIONS = "route_durations"
+        private const val KEY_MODE = "ui_mode"
     }
 }

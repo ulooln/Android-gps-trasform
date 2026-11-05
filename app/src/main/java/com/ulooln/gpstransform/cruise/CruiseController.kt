@@ -14,6 +14,7 @@ import org.osmdroid.util.GeoPoint
  * 巡航移动引擎。
  *
  * 按路线点顺序，在每一段的通过时间内匀速插值，不断更新模拟位置。
+ * 回调区分「正常走完」与「异常中断」，避免把失败伪装成完成。
  */
 class CruiseController(
     private val mockProvider: MockLocationProvider,
@@ -28,14 +29,16 @@ class CruiseController(
     /**
      * 开始巡航。
      *
-     * @param points 路线点，至少 2 个。
-     * @param onTick 每次位置更新时回调当前坐标。
-     * @param onFinished 全部路线走完时回调。
+     * @param points 路线点，至少 2 个
+     * @param onTick 每次位置更新时回调当前坐标（GCJ-02 地图坐标）
+     * @param onFinished 全部路线正常走完
+     * @param onError 中途失败（权限被撤销、Provider 被移除等）
      */
     fun start(
         points: List<RoutePoint>,
         onTick: (GeoPoint) -> Unit,
-        onFinished: () -> Unit
+        onFinished: () -> Unit,
+        onError: (Throwable) -> Unit = {}
     ) {
         stop()
         if (points.size < 2) return
@@ -74,8 +77,8 @@ class CruiseController(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // 权限不足或 Provider 被系统移除时，停止巡航并让上层提示。
-                onFinished()
+                // 权限不足或 Provider 被系统移除：明确上报，避免伪装成正常完成。
+                onError(e)
             }
         }
     }
